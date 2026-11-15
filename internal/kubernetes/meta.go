@@ -291,19 +291,15 @@ var CatalogTags = map[string]string{
 	"vgi.agent_test_tasks":   mustJSON(agentTestTasks),
 }
 
-const mainSchemaDocLLM = "Schema main has one table per core Kubernetes object kind plus a few functions. Tables " +
-	"list objects through the API server on every query (nothing is cached), across all namespaces unless WHERE " +
-	"namespace = '...' (or IN) narrows it. Use pods for scheduling/health questions (phase, node_name, ready, " +
-	"restart_count, containers with waiting/terminated reasons such as CrashLoopBackOff), pod_containers for one row " +
-	"per container, nodes for capacity/allocatable/conditions/taints, deployments/replicasets/statefulsets/daemonsets/" +
-	"jobs/cronjobs for controllers, services/endpointslices/ingresses/networkpolicies for networking, configmaps/" +
-	"secrets/serviceaccounts for configuration (secret values are never exposed), persistentvolumes/" +
-	"persistentvolumeclaims/storageclasses for storage, roles/clusterroles/rolebindings/clusterrolebindings and the " +
-	"flattened rbac_rules / rbac_subjects for access reviews, events for what happened recently. pod_logs(namespace, " +
-	"pod) returns log lines with timestamps; node_metrics / pod_metrics need metrics-server; api_resources and " +
-	"resources(api_version, resource) reach every other resource, custom resources included. Filter labels server-side " +
-	"with WHERE label_selector = 'app=web' (any kubectl selector syntax); labels['app'] also works but is filtered by " +
-	"the worker after listing."
+const mainSchemaDocLLM = "Schema main is a read-only view of a live Kubernetes cluster: one table per core object " +
+	"kind, plus functions for container logs, metrics-server usage and generic access to any API resource, custom " +
+	"resources included. Every query lists objects through the API server (nothing is cached), across all " +
+	"namespaces unless WHERE namespace = '...' (or IN) narrows it. Filter labels server-side with WHERE " +
+	"label_selector = 'app=web' (any kubectl selector syntax); labels['app'] also works but is filtered by the " +
+	"worker after listing. Container state (waiting/terminated reasons such as CrashLoopBackOff, restart counts) " +
+	"answers health questions; the flattened RBAC rule and subject tables answer access reviews; events show what " +
+	"happened recently. Secret values are never exposed, only their keys and metadata. Usage metrics need " +
+	"metrics-server in the cluster."
 
 // MainSchemaDocMD is the main schema's human-facing description.
 const MainSchemaDocMD = "## main\n\nOne table per core Kubernetes object kind, read live from the API server, plus " +
