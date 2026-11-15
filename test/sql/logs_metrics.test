@@ -59,11 +59,12 @@ SELECT count(*) FROM kubernetes.main.pod_logs('vgi-fixture', 'hello', limit_byte
 ----
 1
 
-# The previous (crashed) instance of the crash-looping container.
+# The previous (crashed) instance of the crash-looping container. It writes one line to
+# stdout and one to stderr, whose relative order in the log is up to the runtime.
 query TT
-SELECT container, list(message ORDER BY line_number) FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true) GROUP BY container;
+SELECT container, list_sort(list(message)) FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true) GROUP BY container;
 ----
-app	[starting crashy, 'fatal error: boom']
+app	['fatal error: boom', starting crashy]
 
 # Without container :=, every app container of the pod is read.
 query TT

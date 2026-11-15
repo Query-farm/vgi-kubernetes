@@ -31,6 +31,9 @@ import (
 // logBatchLines bounds the lines per emitted batch.
 const logBatchLines = 8192
 
+// kubeletLogGone starts the kubelet's answer for a container whose log is gone.
+const kubeletLogGone = "unable to retrieve container logs for "
+
 // logTimeout bounds one log read.
 const logTimeout = 3 * time.Minute
 
@@ -61,7 +64,8 @@ var podLogsDocs = fnDocs{Title: "Kubernetes Pod Logs", Category: "observability"
 		"tail_lines := NULL, limit_bytes := 10485760) returns one row per log line: namespace, pod, container, " +
 		"line_number (1-based per container), timestamp (`TIMESTAMPTZ` recorded by the container runtime), message. " +
 		"With container NULL every app container of the pod is read (name init containers explicitly). previous := true " +
-		"reads the last terminated instance, which is what explains a CrashLoopBackOff; containers without one are " +
+		"reads the last terminated instance, which is what explains a CrashLoopBackOff (right after a crash, while the " +
+		"container is terminated, that is the current instance); containers without one are " +
 		"skipped. Use tail_lines or since_seconds to keep reads small; at most limit_bytes are read per container. " +
 		"Filter the lines with WHERE message LIKE / regexp_matches; those filters run in DuckDB after the read.",
 	DocMD: "## Pod Logs\n\n`pod_logs(namespace, pod)` reads container logs like `kubectl logs --timestamps`: one row per " +
@@ -231,13 +235,37 @@ func containerLog(ctx context.Context, c *conn, st *LogState, container string) 
 	q, _ := url.ParseQuery(st.Query)
 	q.Set("container", container)
 	path := "/api/v1/namespaces/" + url.PathEscape(st.Namespace) + "/pods/" + url.PathEscape(st.Pod) + "/log"
-	body, err := c.getWithTimeout(ctx, path, q, logTimeout)
+	var body []byte
+	var err error
+	// While a crash-looping container restarts, the kubelet briefly answers
+	// 200 with "unable to retrieve container logs for <id>" (the instance it
+	// resolved was just garbage-collected); ask again a few times.
+	for attempt := 1; ; attempt++ {
+		body, err = c.getWithTimeout(ctx, path, q, logTimeout)
+		if err != nil || !bytes.HasPrefix(body, []byte(kubeletLogGone)) || attempt >= 5 || q.Get("previous") == "true" {
+			break
+		}
+		sleep(ctx, time.Second)
+	}
 	if err != nil {
 		if !st.Explicit && q.Get("previous") == "true" && isStatus(err, 400) {
 			body = nil // this container has no previous instance; skip it
 		} else {
 			return nil, err
 		}
+	}
+	if bytes.HasPrefix(body, []byte(kubeletLogGone)) && q.Get("previous") == "true" {
+		// Right after a crash the container sits terminated and the kubelet has
+		// already discarded the instance before it: the current, terminated
+		// instance is then the last crashed one, which is what previous asks for.
+		q.Del("previous")
+		if b, err := c.getWithTimeout(ctx, path, q, logTimeout); err == nil {
+			body = b
+		}
+	}
+	if bytes.HasPrefix(body, []byte(kubeletLogGone)) {
+		return nil, fmt.Errorf("pod_logs %s/%s container %s: the kubelet could not return the log: %s",
+			st.Namespace, st.Pod, container, strings.TrimSpace(string(body)))
 	}
 	lines = parseLog(body)
 	logCacheMu.Lock()

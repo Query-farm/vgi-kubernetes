@@ -98,7 +98,7 @@ tasks:
       SELECT git_version LIKE 'v1.%' FROM kubernetes.main.api_servers
   - name: crash_log
     check_sql: >-
-      SELECT list(message ORDER BY line_number) = ['starting crashy', 'fatal error: boom'] FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true)
+      SELECT list_sort(list(message)) = ['fatal error: boom', 'starting crashy'] FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true)
   - name: quantity_bytes
     check_sql: >-
       SELECT kubernetes.main.quantity_value('1.5Gi') = 1610612736
