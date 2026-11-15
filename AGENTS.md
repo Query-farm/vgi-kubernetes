@@ -23,20 +23,31 @@ Faster loops while iterating: `make test-unit`, `make test-sql`, `make lint-expl
 ```
 cmd/vgi-kubernetes-worker/  # main.go: the worker binary (flags -> serve.Main)
 internal/kubernetes/
-  worker.go        # assembles the catalog; register new functions in NewWorker
-  meta.go          # catalog/schema metadata + helpers (objectTags, column)
-  greet.go         # scalar example (overloads, constant arg with choices)
-  sequence.go      # table function example (named args, streaming state)
-  fetch_items.go   # REST API table function (pagination, retries, secrets)
+  worker.go        # assembles the catalog; register new tables in NewWorker
+  meta.go          # catalog/schema metadata, categories, agent tasks + helpers (objectTags, column)
+  client.go        # `kubernetes` secret, ATTACH options, client-go REST config, GET with retries
+  table.go         # resDef framework: plan, page (limit/continue), map, exact filter re-apply, project
+  pushdown.go      # SQL filters -> namespace paths, fieldSelector, labelSelector
+  filters.go       # exact re-application of pushed filters (native + exprduckdb fallback)
+  values.go        # Arrow row/batch building (MAP, LIST, STRUCT, JSON, TIMESTAMPTZ)
+  k8s_helpers.go   # quantities, containers, conditions, selectors
+  res_core.go      # namespaces, nodes, pods, pod_containers, services, config, storage, events
+  res_workloads.go # deployments, replicasets, statefulsets, daemonsets, jobs, cronjobs, HPAs
+  res_other.go     # endpointslices, ingresses, networkpolicies, storage/priority classes, RBAC
+  generic.go       # api_resources, api_servers, resources(api_version, resource)
+  attach.go        # per-ATTACH `resources` schema (resource_tables option)
+  metrics.go       # node_metrics, pod_metrics (metrics.k8s.io)
+  logs.go          # pod_logs
+  quantity.go      # quantity_value scalar (the executable example)
   version.go       # the worker version (checked against release tags)
-  *_test.go        # go test unit tests
+  *_test.go, testdata/  # unit tests; fake API server replaying responses recorded from kind
 internal/serve/    # --http / --unix / stdio and logging flags, shared with recipes
-test/sql/          # sqllogictest files run through DuckDB
-test/mock_api/     # offline mock of the REST API used by tests
+test/sql/          # sqllogictest files run through DuckDB against the kind fixture
+test/fixture/      # kind cluster config + manifests (workloads, CRD, RBAC, metrics-server)
 examples/          # recipes (one package main, served by bin/recipes <name>)
-ci/                # integration harness used by `make test-sql` and CI
+ci/                # run-integration.sh, kind-fixture.sh (throwaway kind cluster)
 scripts/           # vgi_template.py (init / template-diff)
-vgi-agent-tests.yaml  # private graders for the agent test tasks
+vgi-agent-tests.yaml  # private check_sql graders for the agent test tasks
 ```
 
 ## Recipe: add a function

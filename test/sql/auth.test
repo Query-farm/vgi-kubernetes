@@ -1,0 +1,109 @@
+# name: test/sql/auth.test
+# description: Credentials: kubeconfig and token secrets, named secrets, the local-kubeconfig opt-in and errors
+# group: [kubernetes]
+
+require vgi
+
+statement ok
+LOAD json;
+
+require-env KUBERNETES_WORKER
+
+require-env KUBERNETES_FIXTURE_SERVER
+
+require-env KUBERNETES_FIXTURE_TOKEN
+
+require-env KUBERNETES_FIXTURE_CA
+
+require-env KUBERNETES_FIXTURE_KUBECONFIG
+
+statement ok
+ATTACH 'kubernetes' AS k (TYPE vgi, LOCATION '{KUBERNETES_WORKER}');
+
+# No secret and no opt-in: the worker never falls back to ~/.kube/config.
+statement error
+SELECT count(*) FROM k.main.namespaces;
+----
+<REGEX>:.*no Kubernetes credentials.*
+
+# The secret type is published by the worker.
+query T
+SELECT count(*) > 0 FROM duckdb_secret_types() WHERE type = 'kubernetes';
+----
+true
+
+# A whole kubeconfig (base64), as the cluster admin.
+statement ok
+CREATE SECRET kc (TYPE kubernetes, KUBECONFIG '{KUBERNETES_FIXTURE_KUBECONFIG}');
+
+query T
+SELECT count(*) > 0 FROM k.main.namespaces WHERE name = 'kube-system';
+----
+true
+
+# A context that does not exist in the kubeconfig.
+statement ok
+CREATE OR REPLACE SECRET kc (TYPE kubernetes, KUBECONFIG '{KUBERNETES_FIXTURE_KUBECONFIG}', CONTEXT 'no-such-context');
+
+statement error
+SELECT count(*) FROM k.main.namespaces;
+----
+<REGEX>:.*no-such-context.*
+
+statement ok
+DROP SECRET kc;
+
+# Server + token without the CA: the server certificate is not trusted.
+statement ok
+CREATE SECRET bad (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN '{KUBERNETES_FIXTURE_TOKEN}');
+
+statement error
+SELECT count(*) FROM k.main.namespaces;
+----
+<REGEX>:.*(certificate|x509|tls).*
+
+# A wrong token is a 401 from the API server.
+statement ok
+CREATE OR REPLACE SECRET bad (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN 'not-a-token', CERTIFICATE_AUTHORITY_DATA '{KUBERNETES_FIXTURE_CA}');
+
+statement error
+SELECT count(*) FROM k.main.namespaces;
+----
+<REGEX>:.*401.*
+
+# Two secrets: the ATTACH option `secret` picks one by name.
+statement ok
+CREATE SECRET good (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN '{KUBERNETES_FIXTURE_TOKEN}', CERTIFICATE_AUTHORITY_DATA '{KUBERNETES_FIXTURE_CA}');
+
+statement ok
+ATTACH 'kubernetes' AS k2 (TYPE vgi, LOCATION '{KUBERNETES_WORKER}', secret 'good');
+
+query T
+SELECT count(*) > 0 FROM k2.main.namespaces WHERE name = 'vgi-fixture';
+----
+true
+
+statement ok
+ATTACH 'kubernetes' AS k3 (TYPE vgi, LOCATION '{KUBERNETES_WORKER}', secret 'missing');
+
+statement error
+SELECT count(*) FROM k3.main.namespaces;
+----
+<REGEX>:.*no such secret.*
+
+# The read-only identity cannot list what it was not granted? It was granted
+# get/list/watch on everything; it still cannot be used to write, and the worker
+# only issues GET requests, so there is nothing to test beyond reads succeeding.
+query T
+SELECT count(*) > 0 FROM k2.main.rbac_subjects WHERE subject_name = 'vgi-sql';
+----
+true
+
+statement ok
+DETACH k3;
+
+statement ok
+DETACH k2;
+
+statement ok
+DETACH k;

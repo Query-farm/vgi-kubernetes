@@ -25,9 +25,13 @@ jobs:
       - name: Upgrade dependencies, keeping vgi-go on its pinned minor
         run: |
           go get -u ./...
-          go get github.com/Query-farm/vgi-go@v0.39
+          go get github.com/Query-farm/vgi-go@v0.42
           go mod tidy
       - run: make lint test-unit
+      - name: Install kind (the SQL tests run against a throwaway kind cluster)
+        run: |
+          curl -fsSLo kind "https://kind.sigs.k8s.io/dl/v0.33.0/kind-linux-amd64"
+          sudo install -m 0755 kind /usr/local/bin/kind && rm kind
       - run: make test-sql-all
       - run: make lint-explain
       - name: Open an issue on failure

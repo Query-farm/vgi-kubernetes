@@ -1,0 +1,110 @@
+# name: test/sql/logs_metrics.test
+# description: pod_logs, metrics.k8s.io usage and the quantity_value scalar
+# group: [kubernetes]
+
+require vgi
+
+statement ok
+LOAD json;
+
+require-env KUBERNETES_WORKER
+
+require-env KUBERNETES_FIXTURE_SERVER
+
+require-env KUBERNETES_FIXTURE_TOKEN
+
+require-env KUBERNETES_FIXTURE_CA
+
+statement ok
+ATTACH 'kubernetes' (TYPE vgi, LOCATION '{KUBERNETES_WORKER}');
+
+# ---------------------------------------------------------------- quantity_value (no cluster needed)
+
+query TR
+SELECT q, kubernetes.main.quantity_value(q) FROM (VALUES ('250m'), ('64Mi'), ('1G'), ('1.5Gi'), ('2'), ('bogus'), (NULL)) t(q) ORDER BY q NULLS LAST;
+----
+1.5Gi	1610612736.0
+1G	1000000000.0
+2	2.0
+250m	0.25
+64Mi	67108864.0
+bogus	NULL
+NULL	NULL
+
+statement ok
+CREATE SECRET k8s (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN '{KUBERNETES_FIXTURE_TOKEN}', CERTIFICATE_AUTHORITY_DATA '{KUBERNETES_FIXTURE_CA}');
+
+query R
+SELECT kubernetes.main.quantity_value(capacity['memory']) = capacity_memory_bytes FROM kubernetes.main.nodes;
+----
+true
+
+# ---------------------------------------------------------------- pod_logs
+
+# A completed pod's log, with runtime timestamps.
+query ITT
+SELECT line_number, message, timestamp IS NOT NULL FROM kubernetes.main.pod_logs('vgi-fixture', 'hello') ORDER BY line_number;
+----
+1	line one	true
+2	line two	true
+3	line three	true
+
+query T
+SELECT message FROM kubernetes.main.pod_logs('vgi-fixture', 'hello', tail_lines := 1);
+----
+line three
+
+query I
+SELECT count(*) FROM kubernetes.main.pod_logs('vgi-fixture', 'hello', limit_bytes := 9);
+----
+1
+
+# The previous (crashed) instance of the crash-looping container.
+query TT
+SELECT container, list(message ORDER BY line_number) FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true) GROUP BY container;
+----
+app	[starting crashy, 'fatal error: boom']
+
+# Without container :=, every app container of the pod is read.
+query TT
+SELECT container, message FROM kubernetes.main.pod_logs('vgi-fixture', 'db-0');
+----
+db	db ready
+
+query T
+SELECT message FROM kubernetes.main.pod_logs('vgi-fixture', 'db-0', container := 'db', since_seconds := 86400);
+----
+db ready
+
+statement error
+SELECT * FROM kubernetes.main.pod_logs('vgi-fixture', 'db-0', container := 'nope');
+----
+<REGEX>:.*400.*
+
+statement error
+SELECT * FROM kubernetes.main.pod_logs('vgi-fixture', 'no-such-pod');
+----
+<REGEX>:.*404.*
+
+statement error
+SELECT * FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', since_seconds := 10, since_time := TIMESTAMPTZ '2026-01-01 00:00:00+00');
+----
+<REGEX>:.*not both.*
+
+# ---------------------------------------------------------------- metrics.k8s.io (metrics-server in the fixture)
+
+query T
+SELECT count(*) = 1 AND bool_and(cpu_usage_millicores >= 0 AND memory_usage_bytes > 0 AND window_seconds > 0) FROM kubernetes.main.node_metrics;
+----
+true
+
+query TI
+SELECT container_name, count(*) FROM kubernetes.main.pod_metrics WHERE namespace = 'vgi-fixture' AND label_selector = 'app=web' GROUP BY ALL ORDER BY ALL;
+----
+sidecar	2
+web	2
+
+query T
+SELECT bool_and(m.memory_usage_bytes >= 0) FROM kubernetes.main.pod_metrics m JOIN kubernetes.main.pod_containers c USING (namespace, pod_name, container_name) WHERE m.namespace = 'vgi-fixture';
+----
+true

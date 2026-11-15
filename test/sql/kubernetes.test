@@ -1,148 +1,340 @@
 # name: test/sql/kubernetes.test
-# description: SQL-level tests for the kubernetes worker, run through DuckDB by ci/run-integration.sh
+# description: Core resource tables against the kind fixture (ci/kind-fixture.sh), as the read-only vgi-sql ServiceAccount
 # group: [kubernetes]
-# managed-by: vgi-starters (edit upstream in shared/, then run tools/render.py)
 
 require vgi
 
+statement ok
+LOAD json;
+
 require-env KUBERNETES_WORKER
 
-require-env KUBERNETES_MOCK_API
+require-env KUBERNETES_FIXTURE_SERVER
 
-require-env KUBERNETES_MOCK_API_AUTH
+require-env KUBERNETES_FIXTURE_TOKEN
+
+require-env KUBERNETES_FIXTURE_CA
 
 statement ok
 ATTACH 'kubernetes' (TYPE vgi, LOCATION '{KUBERNETES_WORKER}');
 
-# ---------------------------------------------------------------- greet (scalar)
+statement ok
+CREATE SECRET k8s (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN '{KUBERNETES_FIXTURE_TOKEN}', CERTIFICATE_AUTHORITY_DATA '{KUBERNETES_FIXTURE_CA}');
+
+# ---------------------------------------------------------------- cluster
 
 query T
-SELECT kubernetes.main.greet('Ada');
+SELECT git_version LIKE 'v1.%' FROM kubernetes.main.api_servers;
 ----
-Hi, Ada!
+true
+
+query TTT
+SELECT name, phase, labels['pod-security.kubernetes.io/enforce'] FROM kubernetes.main.namespaces WHERE name = 'vgi-fixture';
+----
+vgi-fixture	Active	baseline
+
+query TTTT
+SELECT ready, unschedulable, roles, labels['vgi.query.farm/fixture'] FROM kubernetes.main.nodes;
+----
+true	false	[control-plane]	true
 
 query T
-SELECT kubernetes.main.greet('Ada', 'formal');
+SELECT allocatable_cpu_millicores > 0 AND allocatable_memory_bytes > 0 AND capacity_pods > 0 AND len(conditions) >= 4 FROM kubernetes.main.nodes;
 ----
-Good day, Ada.
+true
 
-# NULL in, NULL out.
+query TT
+SELECT value, preemption_policy FROM kubernetes.main.priorityclasses WHERE name = 'vgi-fixture-high';
+----
+100000	Never
+
+# ---------------------------------------------------------------- pods
+
 query T
-SELECT kubernetes.main.greet(NULL);
+SELECT count(*) FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture';
 ----
-NULL
+7
 
-# Works over a whole column, one result per row.
-query T
-SELECT kubernetes.main.greet(name) FROM (VALUES ('Ada'), ('Grace'), (NULL)) AS t(name) ORDER BY ALL NULLS LAST;
+# phase -> fieldSelector status.phase, label_selector -> labelSelector (echoed).
+query TTT
+SELECT phase, label_selector, controller_kind FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND phase = 'Succeeded' AND label_selector = 'app=pi';
 ----
-Hi, Ada!
-Hi, Grace!
-NULL
+Succeeded	app=pi	Job
 
-# `style` is constrained to 'casual' | 'formal' and checked when the query is bound.
-# (No expected message: each SDK words constraint errors its own way.)
-statement error
-SELECT kubernetes.main.greet('Ada', 'loud');
+# Pod-level requests are numbers summed over app containers: 50m+10m CPU, 32Mi+16Mi memory.
+query IIIITT
+SELECT count(*), sum(cpu_request_millicores), sum(memory_request_bytes), sum(memory_limit_bytes), bool_and(ready), list_distinct(flatten(list(images))) FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND label_selector = 'app=web';
 ----
-<REGEX>:.*
+2	120	100663296	134217728	1	['busybox:1.36']
 
-# ------------------------------------------------------ sequence_table (table fn)
-
-query II
-SELECT n, squared FROM kubernetes.main.sequence_table(4) ORDER BY n;
-----
-0	0
-1	1
-2	4
-3	9
-
-# Named argument with a default.
+# labels['...'] is not a selector, but the worker still filters exactly.
 query I
-SELECT n FROM kubernetes.main.sequence_table(3, step := 5) ORDER BY n;
+SELECT count(*) FROM kubernetes.main.pods WHERE labels['tier'] = 'frontend' AND namespace = 'vgi-fixture';
 ----
-0
-5
-10
-
-# Larger than one batch: the cursor must carry across process calls.
-query II
-SELECT count(*), max(n) FROM kubernetes.main.sequence_table(25000);
-----
-25000	24999
+2
 
 query I
-SELECT count(*) FROM kubernetes.main.sequence_table(0);
+SELECT count(*) FROM kubernetes.main.pods WHERE name LIKE 'web-%' AND namespace IN ('vgi-fixture', 'default');
+----
+2
+
+# The crash-looping pod: restarted, not ready, last instance exited 3.
+query TTTT
+SELECT ready, restart_count > 0, containers[1].last_termination_exit_code, priority_class_name FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND name = 'crashy';
+----
+false	true	3	vgi-fixture-high
+
+query T
+SELECT containers[1].state IN ('waiting', 'terminated', 'running') FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND name = 'crashy';
+----
+true
+
+# node_name -> fieldSelector spec.nodeName: an unknown node matches nothing.
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE node_name = 'no-such-node';
 ----
 0
 
-# count is constrained to [0, 1000000].
-statement error
-SELECT * FROM kubernetes.main.sequence_table(-1);
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE node_name = (SELECT name FROM kubernetes.main.nodes) AND namespace = 'vgi-fixture';
 ----
-<REGEX>:.*
+7
 
-# Named arguments are constrained too: step >= 1.
-statement error
-SELECT * FROM kubernetes.main.sequence_table(3, step := 0);
+# pod_containers: one row per container; the web pods have two each.
+query TTIII
+SELECT container_name, kind, count(*), sum(cpu_request_millicores), max(memory_limit_bytes) FROM kubernetes.main.pod_containers WHERE namespace = 'vgi-fixture' AND pod_name LIKE 'web-%' GROUP BY ALL ORDER BY container_name;
 ----
-<REGEX>:.*
+sidecar	app	2	20	NULL
+web	app	2	100	67108864
 
-# ------------------------------------------------- fetch_items (REST table fn)
+query I
+SELECT count(*) FROM kubernetes.main.pod_containers WHERE namespace = 'vgi-fixture' AND last_termination_reason = 'Error';
+----
+1
+
+# ---------------------------------------------------------------- workloads
+
+query IIITTTT
+SELECT replicas, ready_replicas, available_replicas, strategy, max_surge, available, images FROM kubernetes.main.deployments WHERE namespace = 'vgi-fixture' AND name = 'web';
+----
+2	2	2	RollingUpdate	1	true	['busybox:1.36']
+
+query TT
+SELECT containers[1].name, containers[1].ports FROM kubernetes.main.deployments WHERE namespace = 'vgi-fixture' AND name = 'web';
+----
+web	[8080]
+
+query ITT
+SELECT replicas, revision, owner_references[1].kind FROM kubernetes.main.replicasets WHERE namespace = 'vgi-fixture' AND name LIKE 'web-%';
+----
+2	1	Deployment
+
+query IITT
+SELECT replicas, ready_replicas, service_name, volume_claim_templates FROM kubernetes.main.statefulsets WHERE namespace = 'vgi-fixture';
+----
+1	1	db	[storage]
 
 query IIT
-SELECT count(*), sum(id), min(name) FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API}', page_size := 4);
+SELECT desired_number_scheduled, number_ready, update_strategy FROM kubernetes.main.daemonsets WHERE namespace = 'vgi-fixture';
 ----
-25	325	item-01
+1	1	RollingUpdate
 
-query TI
-SELECT category, count(*) FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API}') GROUP BY category ORDER BY category;
+query TIIIT
+SELECT status, succeeded, failed, backoff_limit, duration_seconds >= 0 FROM kubernetes.main.jobs WHERE namespace = 'vgi-fixture' AND name = 'pi';
 ----
-hardware	8
-service	8
-software	9
+Complete	1	0	0	true
 
-# The harness runs KUBERNETES_MOCK_API with MOCK_API_FLAKY=1: every page answers
-# 429 + Retry-After once, so every query above also exercised the retry path.
-
-# KUBERNETES_MOCK_API_AUTH requires a bearer token ('test-token'). Every language's
-# fetch_items must put the HTTP status code in its error message.
-statement error
-SELECT count(*) FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API_AUTH}');
+query TTTTT
+SELECT schedule, time_zone, suspend, concurrency_policy, last_schedule_time FROM kubernetes.main.cronjobs WHERE namespace = 'vgi-fixture';
 ----
-401
+0 3 * * *	Etc/UTC	true	Forbid	NULL
 
-statement ok
-CREATE SECRET kubernetes_api_test (TYPE kubernetes_api, TOKEN 'test-token');
+query TTIIT
+SELECT target_kind, target_name, min_replicas, max_replicas, metrics->>'$[0].resource.name' FROM kubernetes.main.horizontalpodautoscalers WHERE namespace = 'vgi-fixture';
+----
+Deployment	web	2	4	cpu
+
+# ---------------------------------------------------------------- networking
+
+query TTTT
+SELECT type, ports[1].port, ports[1].target_port, selector_labels FROM kubernetes.main.services WHERE namespace = 'vgi-fixture' AND name = 'web';
+----
+ClusterIP	80	8080	{app=web}
 
 query I
-SELECT count(*) FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API_AUTH}', page_size := 25);
+SELECT count(*) FROM kubernetes.main.services WHERE type = 'ClusterIP' AND namespace = 'vgi-fixture';
 ----
-25
+1
 
-# Several pages: the token must survive between batches (over HTTP each batch is a
-# separate request, so a token kept only in memory is lost after page 1).
-query I
-SELECT count(*) FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API_AUTH}', page_size := 7);
+query TII
+SELECT address_type, sum(endpoint_count), sum(ready_count) FROM kubernetes.main.endpointslices WHERE namespace = 'vgi-fixture' AND service_name = 'web' GROUP BY ALL;
 ----
-25
+IPv4	2	2
+
+query TTTTT
+SELECT hosts, rules[1].path, rules[1].path_type, rules[1].service_name, rules[1].service_port FROM kubernetes.main.ingresses WHERE namespace = 'vgi-fixture';
+----
+[web.example.com]	/	Prefix	web	80
+
+query TTTTII
+SELECT name, selects_all_pods, default_deny_ingress, policy_types, ingress_rule_count, egress_rule_count FROM kubernetes.main.networkpolicies WHERE namespace = 'vgi-fixture' ORDER BY name;
+----
+default-deny-ingress	true	true	[Ingress]	0	0
+web-from-frontend	false	false	[Ingress]	1	0
+
+query T
+SELECT ingress->>'$[0].from[0].podSelector.matchLabels.tier' FROM kubernetes.main.networkpolicies WHERE namespace = 'vgi-fixture' AND name = 'web-from-frontend';
+----
+frontend
+
+# ---------------------------------------------------------------- config: values never leak
+
+query TTT
+SELECT type, keys, annotations['kubectl.kubernetes.io/last-applied-configuration'] FROM kubernetes.main.secrets WHERE namespace = 'vgi-fixture' AND name = 'db-credentials';
+----
+Opaque	[password, username]	<redacted>
+
+query I
+SELECT count(*) FROM kubernetes.main.secrets WHERE namespace = 'vgi-fixture' AND type = 'Opaque';
+----
+1
+
+# No column of any secrets row contains the value, in any form.
+query I
+SELECT count(*) FROM kubernetes.main.secrets s WHERE CAST(s AS VARCHAR) LIKE '%fixture-password%';
+----
+0
+
+query TT
+SELECT keys, data FROM kubernetes.main.configmaps WHERE namespace = 'vgi-fixture' AND name = 'app-config';
+----
+[feature_flags, log_level]	NULL
+
+query TTT
+SELECT automount_service_account_token, secrets, image_pull_secrets FROM kubernetes.main.serviceaccounts WHERE namespace = 'vgi-fixture' AND name = 'reporter';
+----
+false	[]	[]
+
+# ---------------------------------------------------------------- storage
+
+query TTTIT
+SELECT name, phase, storage_class, requested_bytes, access_modes FROM kubernetes.main.persistentvolumeclaims WHERE namespace = 'vgi-fixture' ORDER BY name;
+----
+data	Pending	standard	1073741824	[ReadWriteOnce]
+storage-db-0	Bound	standard	268435456	[ReadWriteOnce]
+
+query TIT
+SELECT phase, capacity_bytes, source_type IS NOT NULL FROM kubernetes.main.persistentvolumes WHERE claim_namespace = 'vgi-fixture' AND claim_name = 'storage-db-0';
+----
+Bound	268435456	true
+
+query TTT
+SELECT name, is_default, volume_binding_mode FROM kubernetes.main.storageclasses ORDER BY name;
+----
+standard	true	WaitForFirstConsumer
+
+# ---------------------------------------------------------------- RBAC
+
+query TT
+SELECT len(rules), rules[2].resource_names FROM kubernetes.main.roles WHERE namespace = 'vgi-fixture' AND name = 'secret-reader';
+----
+2	[app-config]
+
+query TTT
+SELECT role_kind, role_name, [s.kind || ':' || s.name FOR s IN subjects] FROM kubernetes.main.rolebindings WHERE namespace = 'vgi-fixture';
+----
+Role	secret-reader	['ServiceAccount:reporter', 'User:alice']
+
+query TTT
+SELECT rules[1].verbs, rules[1].resources, aggregated FROM kubernetes.main.clusterroles WHERE name = 'vgi-sql-reader';
+----
+[get, list, watch]	[*]	false
+
+query T
+SELECT aggregated FROM kubernetes.main.clusterroles WHERE name = 'admin';
+----
+true
+
+query TT
+SELECT role_name, subjects[1].namespace FROM kubernetes.main.clusterrolebindings WHERE name = 'vgi-sql-reader';
+----
+vgi-sql-reader	vgi-fixture
+
+query TTTITTT
+SELECT role_kind, namespace, role_name, rule_index, api_group, resource, verb FROM kubernetes.main.rbac_rules WHERE namespace = 'vgi-fixture' ORDER BY ALL;
+----
+Role	vgi-fixture	secret-reader	0	(empty)	secrets	get
+Role	vgi-fixture	secret-reader	0	(empty)	secrets	list
+Role	vgi-fixture	secret-reader	1	(empty)	configmaps	get
+
+# role_name -> fieldSelector metadata.name, across both Roles and ClusterRoles.
+query TTTT
+SELECT role_kind, namespace, verb, non_resource_url FROM kubernetes.main.rbac_rules WHERE role_name = 'vgi-sql-reader' AND non_resource_url IS NOT NULL ORDER BY non_resource_url;
+----
+ClusterRole	NULL	get	/api
+ClusterRole	NULL	get	/api/*
+ClusterRole	NULL	get	/apis
+ClusterRole	NULL	get	/apis/*
+ClusterRole	NULL	get	/version
+
+query TTTTT
+SELECT binding_kind, namespace, role_name, subject_kind, subject_namespace FROM kubernetes.main.rbac_subjects WHERE subject_name IN ('reporter', 'alice', 'vgi-sql') ORDER BY ALL;
+----
+ClusterRoleBinding	NULL	vgi-sql-reader	ServiceAccount	vgi-fixture
+RoleBinding	vgi-fixture	secret-reader	ServiceAccount	vgi-fixture
+RoleBinding	vgi-fixture	secret-reader	User	NULL
+
+query I
+SELECT count(*) - count(DISTINCT id) FROM kubernetes.main.rbac_rules;
+----
+0
+
+# ---------------------------------------------------------------- events
+
+query TTITT
+SELECT type, reason, count, involved_kind, source_component FROM kubernetes.main.events WHERE namespace = 'vgi-fixture' AND reason = 'FixtureWarning';
+----
+Warning	FixtureWarning	3	Pod	vgi-fixture
+
+query I
+SELECT count(*) > 0 FROM kubernetes.main.events WHERE namespace = 'vgi-fixture' AND involved_kind = 'Pod' AND involved_name = 'crashy' AND reason = 'BackOff';
+----
+true
+
+# TIMESTAMPTZ filters. The runner has no ICU, so the session is UTC (vgi-go 0.42.0 rejects
+# these pushed filters in a non-UTC TimeZone; see README Limitations).
+
+query T
+SELECT last_seen FROM kubernetes.main.events WHERE namespace = 'vgi-fixture' AND reason = 'FixtureWarning' AND last_seen > TIMESTAMPTZ '2025-12-31 00:00:00+00';
+----
+2026-01-01 00:05:00+00
+
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND creation_timestamp < TIMESTAMPTZ '2000-01-01 00:00:00+00';
+----
+0
+
+# ---------------------------------------------------------------- empty and impossible filters
+
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE namespace = 'no-such-namespace';
+----
+0
+
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE namespace = 'a' AND namespace = 'b';
+----
+0
+
+query I
+SELECT count(*) FROM kubernetes.main.pods WHERE label_selector = 'app=web' AND label_selector = 'app=db';
+----
+0
+
+statement error
+SELECT count(*) FROM kubernetes.main.pods WHERE label_selector = 'app in web';
+----
+<REGEX>:.*400.*
 
 statement ok
-DROP SECRET kubernetes_api_test;
-
-# base_url must be http(s).
-statement error
-SELECT * FROM kubernetes.main.fetch_items('ftp://example.com');
-----
-<REGEX>:.*
-
-# page_size is a named argument constrained to [1, 1000].
-statement error
-SELECT * FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API}', page_size := 0);
-----
-<REGEX>:.*
-
-statement error
-SELECT * FROM kubernetes.main.fetch_items('{KUBERNETES_MOCK_API}', page_size := 5000);
-----
-<REGEX>:.*
+DETACH kubernetes;

@@ -14,8 +14,8 @@ import (
 
 	"github.com/Query-farm/vgi-go/vgi"
 
-	"github.com/your-org/vgi-kubernetes/internal/kubernetes"
-	"github.com/your-org/vgi-kubernetes/internal/serve"
+	"github.com/Query-farm/vgi-kubernetes/internal/kubernetes"
+	"github.com/Query-farm/vgi-kubernetes/internal/serve"
 )
 
 func main() {

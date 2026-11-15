@@ -1,16 +1,104 @@
 # Private graders for the public vgi.agent_test_tasks in the worker's catalog metadata.
-# `vgi-lint lint --ai` runs an agent on each prompt and grades it with check_sql.
-# See https://github.com/Query-farm/vgi-lint-check (VGI920).
+# `vgi-lint lint --ai` runs an agent on each prompt and grades it (VGI920, see
+# https://github.com/Query-farm/vgi-lint-check). Every task reads the kind fixture cluster
+# (ci/kind-fixture.sh + test/fixture/*.yaml); `make lint-ai` runs inside it and attaches with
+# use_local_kubeconfig pointing at the fixture's kubeconfig.
+# Pod names carry random suffixes and live metrics move, so every task is graded with a
+# check_sql that asserts the fixture's ground truth, independent of the agent's answer shape.
 tasks:
-  - name: formal_greeting
-    reference_sql: SELECT kubernetes.main.greet('Grace', 'formal') AS greeting
-  - name: sum_of_squares
-    reference_sql: SELECT sum(squared) AS total FROM kubernetes.main.sequence_table(10)
-  - name: stepped_sequence
-    reference_sql: SELECT n FROM kubernetes.main.sequence_table(4, step := 5) ORDER BY n
-  # Reads the public demo API (https://vgi-starter-api.query-farm.services/v1).
-  - name: items_per_category
+  - name: restarting_pods
     check_sql: >-
-      SELECT count(*) = 3 AND sum(items) = 25
-      FROM (SELECT category, count(*) AS items
-            FROM kubernetes.main.fetch_items('https://vgi-starter-api.query-farm.services/v1') GROUP BY category)
+      SELECT list(name ORDER BY name) = ['crashy'] FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND restart_count > 0
+  - name: deployment_readiness
+    check_sql: >-
+      SELECT ready_replicas = 2 AND replicas = 2 FROM kubernetes.main.deployments WHERE namespace = 'vgi-fixture' AND name = 'web'
+  - name: memory_requests
+    check_sql: >-
+      SELECT sum(c.memory_request_bytes) = 100663296 FROM kubernetes.main.pod_containers c JOIN kubernetes.main.pods p ON p.uid = c.pod_uid WHERE p.namespace = 'vgi-fixture' AND p.label_selector = 'app=web'
+  - name: secret_keys
+    check_sql: >-
+      SELECT keys = ['password', 'username'] FROM kubernetes.main.secrets WHERE namespace = 'vgi-fixture' AND name = 'db-credentials'
+  - name: crd_instances
+    check_sql: >-
+      SELECT list(name || '=' || (spec->>'size') ORDER BY name) = ['widget-a=3', 'widget-b=5'] FROM kubernetes.main.resources('fixture.vgi.query.farm/v1', 'widgets')
+  - name: rbac_secret_readers
+    check_sql: >-
+      SELECT list(DISTINCT role_name) = ['secret-reader'] FROM kubernetes.main.rbac_rules WHERE role_kind = 'Role' AND namespace = 'vgi-fixture' AND resource = 'secrets' AND verb = 'get'
+  - name: warning_events
+    check_sql: >-
+      SELECT bool_or(reason = 'FixtureWarning') FROM kubernetes.main.events WHERE namespace = 'vgi-fixture' AND type = 'Warning'
+  - name: completed_job
+    check_sql: >-
+      SELECT status = 'Complete' AND succeeded = 1 FROM kubernetes.main.jobs WHERE namespace = 'vgi-fixture' AND name = 'pi'
+  - name: pod_security_level
+    check_sql: >-
+      SELECT labels['pod-security.kubernetes.io/enforce'] = 'baseline' FROM kubernetes.main.namespaces WHERE name = 'vgi-fixture'
+  - name: node_inventory
+    check_sql: >-
+      SELECT count(*) = 1 AND bool_and(kubelet_version LIKE 'v1.%' AND allocatable_cpu_millicores > 0) FROM kubernetes.main.nodes
+  - name: web_replicaset
+    check_sql: >-
+      SELECT count(*) = 1 AND bool_and(revision = '1' AND name LIKE 'web-%') FROM kubernetes.main.replicasets WHERE namespace = 'vgi-fixture' AND replicas > 0
+  - name: stateful_and_daemon
+    check_sql: >-
+      SELECT (SELECT ready_replicas = replicas FROM kubernetes.main.statefulsets WHERE namespace = 'vgi-fixture' AND name = 'db') AND (SELECT number_ready = desired_number_scheduled FROM kubernetes.main.daemonsets WHERE namespace = 'vgi-fixture' AND name = 'agent')
+  - name: suspended_cronjobs
+    check_sql: >-
+      SELECT list(name || ' ' || schedule) = ['nightly 0 3 * * *'] FROM kubernetes.main.cronjobs WHERE namespace = 'vgi-fixture' AND suspend
+  - name: hpa_bounds
+    check_sql: >-
+      SELECT min_replicas = 2 AND max_replicas = 4 FROM kubernetes.main.horizontalpodautoscalers WHERE namespace = 'vgi-fixture' AND target_name = 'web'
+  - name: service_backends
+    check_sql: >-
+      SELECT (SELECT sum(ready_count) FROM kubernetes.main.endpointslices WHERE namespace = 'vgi-fixture' AND service_name = 'web') = 2 AND (SELECT ports[1].port FROM kubernetes.main.services WHERE namespace = 'vgi-fixture' AND name = 'web') = 80
+  - name: ingress_routes
+    check_sql: >-
+      SELECT r.host = 'web.example.com' AND r.path = '/' FROM kubernetes.main.ingresses, UNNEST(rules) AS u(r) WHERE namespace = 'vgi-fixture' AND r.service_name = 'web'
+  - name: default_deny
+    check_sql: >-
+      SELECT list(name) = ['default-deny-ingress'] FROM kubernetes.main.networkpolicies WHERE namespace = 'vgi-fixture' AND default_deny_ingress
+  - name: configmap_keys
+    check_sql: >-
+      SELECT keys = ['feature_flags', 'log_level'] FROM kubernetes.main.configmaps WHERE namespace = 'vgi-fixture' AND name = 'app-config'
+  - name: automount_optout
+    check_sql: >-
+      SELECT list(name) = ['reporter'] FROM kubernetes.main.serviceaccounts WHERE namespace = 'vgi-fixture' AND automount_service_account_token = false
+  - name: pending_claim
+    check_sql: >-
+      SELECT c.name = 'data' AND c.requested_bytes = 1073741824 AND s.is_default FROM kubernetes.main.persistentvolumeclaims c JOIN kubernetes.main.storageclasses s ON s.name = c.storage_class WHERE c.namespace = 'vgi-fixture' AND c.phase = 'Pending'
+  - name: bound_volume
+    check_sql: >-
+      SELECT capacity_bytes = 268435456 AND phase = 'Bound' FROM kubernetes.main.persistentvolumes WHERE claim_namespace = 'vgi-fixture' AND claim_name = 'storage-db-0'
+  - name: high_priority_pods
+    check_sql: >-
+      SELECT (SELECT list(name) FROM kubernetes.main.pods WHERE namespace = 'vgi-fixture' AND priority_class_name = 'vgi-fixture-high') = ['crashy'] AND (SELECT value FROM kubernetes.main.priorityclasses WHERE name = 'vgi-fixture-high') = 100000
+  - name: role_rule_count
+    check_sql: >-
+      SELECT len(rules) = 2 AND rules[2].resources = ['configmaps'] AND rules[2].resource_names = ['app-config'] FROM kubernetes.main.roles WHERE namespace = 'vgi-fixture' AND name = 'secret-reader'
+  - name: binding_subjects
+    check_sql: >-
+      SELECT role_name = 'secret-reader' AND len(subjects) = 2 FROM kubernetes.main.rolebindings WHERE namespace = 'vgi-fixture' AND name = 'reporter-reads-secrets'
+  - name: alice_roles
+    check_sql: >-
+      SELECT list(namespace || '/' || role_name) = ['vgi-fixture/secret-reader'] FROM kubernetes.main.rbac_subjects WHERE subject_kind = 'User' AND subject_name = 'alice'
+  - name: sql_reader_verbs
+    check_sql: >-
+      SELECT (SELECT list(b.role_name) FROM kubernetes.main.clusterrolebindings b, UNNEST(b.subjects) AS u(s) WHERE s.kind = 'ServiceAccount' AND s.name = 'vgi-sql') = ['vgi-sql-reader'] AND (SELECT rules[1].verbs FROM kubernetes.main.clusterroles WHERE name = 'vgi-sql-reader') = ['get', 'list', 'watch']
+  - name: node_usage
+    check_sql: >-
+      SELECT count(*) = 1 AND bool_and(memory_usage_bytes > 0) FROM kubernetes.main.node_metrics
+  - name: web_pod_usage
+    check_sql: >-
+      SELECT count(*) = 4 FROM kubernetes.main.pod_metrics WHERE namespace = 'vgi-fixture' AND label_selector = 'app=web'
+  - name: widget_api
+    check_sql: >-
+      SELECT api_version = 'fixture.vgi.query.farm/v1' AND resource = 'widgets' AND namespaced FROM kubernetes.main.api_resources WHERE kind = 'Widget'
+  - name: cluster_version
+    check_sql: >-
+      SELECT git_version LIKE 'v1.%' FROM kubernetes.main.api_servers
+  - name: crash_log
+    check_sql: >-
+      SELECT list(message ORDER BY line_number) = ['starting crashy', 'fatal error: boom'] FROM kubernetes.main.pod_logs('vgi-fixture', 'crashy', previous := true)
+  - name: quantity_bytes
+    check_sql: >-
+      SELECT kubernetes.main.quantity_value('1.5Gi') = 1610612736

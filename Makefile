@@ -14,11 +14,11 @@ TOOLS           := $(CURDIR)/.tools
 HAYBARN_UNITTEST := $(TOOLS)/bin/haybarn-unittest
 GOLANGCI_LINT   := $(TOOLS)/bin/golangci-lint$(EXE)
 TRANSPORT       ?= stdio
-# Pure Go by default; set CGO_ENABLED=1 if you import vgi-go/vgi/exprduckdb.
-export CGO_ENABLED ?= 0
+# cgo is on: filters.go imports vgi-go/vgi/exprduckdb (embedded DuckDB) to re-apply pushed filters.
+export CGO_ENABLED ?= 1
 
 .DEFAULT_GOAL := help
-.PHONY: help build test test-unit test-sql test-sql-all lint lint-explain lint-ai fmt check run run-http debug tools template-diff clean
+.PHONY: help build test test-unit test-sql test-sql-all test-sql-transports lint-fixture lint lint-explain lint-ai fmt check run run-http debug tools template-diff clean
 
 help: ## List the targets
 	@awk 'BEGIN{FS=":.*## "} /^[a-zA-Z_-]+:.*## /{printf "  %-14s %s\n",$$1,$$2}' $(MAKEFILE_LIST)
@@ -46,21 +46,32 @@ lint: $(GOLANGCI_LINT) ## Static checks: gofmt, go vet, golangci-lint
 test-unit: ## Unit tests (go test)
 	go test ./...
 
-test-sql: build tools ## SQL tests through DuckDB: make test-sql TRANSPORT=stdio|launch|http
-	WORKER=$(WORKER) RECIPES_WORKER="$(RECIPES)" HAYBARN_UNITTEST=$(HAYBARN_UNITTEST) TRANSPORT=$(TRANSPORT) PYTHON="uv run --no-project python" ci/run-integration.sh
+test-sql: build tools ## SQL tests through DuckDB against a kind cluster: make test-sql TRANSPORT=stdio|launch|http
+	WORKER=$(WORKER) RECIPES_WORKER="$(RECIPES)" HAYBARN_UNITTEST=$(HAYBARN_UNITTEST) TRANSPORT=$(TRANSPORT) PYTHON="uv run --no-project python" ci/kind-fixture.sh ci/run-integration.sh
 
-test-sql-all: ## SQL tests over every transport
+test-sql-all: build tools ## SQL tests over every transport (one throwaway kind cluster for all three)
+	ci/kind-fixture.sh $(MAKE) test-sql-transports
+
+test-sql-transports:
 	$(MAKE) test-sql TRANSPORT=stdio
 	$(MAKE) test-sql TRANSPORT=launch
 	$(MAKE) test-sql TRANSPORT=http
 
 test: test-unit test-sql ## Unit + SQL tests
 
-lint-explain: build ## Metadata quality report (vgi-lint, settings in vgi-lint.toml). LINT_ARGS="--format agent" for agents
-	$(VGI_LINT) "$(WORKER)" $(LINT_ARGS)
+# The examples read a live cluster, so the gate is static (as in CI). `make lint-fixture`
+# and `make lint-ai` execute them against the kind fixture, attaching with
+# use_local_kubeconfig (ci/kind-fixture.sh points KUBECONFIG at the throwaway cluster).
+LINT_EXECUTE    ?= --no-execute
 
-lint-ai: ## Opt-in L3 check: an agent runs vgi-agent-tests.yaml and docs are reviewed (needs the claude CLI)
-	@$(MAKE) --no-print-directory lint-explain LINT_ARGS="--ai $(LINT_ARGS)"
+lint-explain: build ## Metadata quality report (vgi-lint, settings in vgi-lint.toml). LINT_ARGS="--format agent" for agents
+	$(VGI_LINT) "$(WORKER)" $(LINT_EXECUTE) $(LINT_ARGS)
+
+lint-fixture: build ## Metadata report with the examples executed against the kind fixture
+	ci/kind-fixture.sh $(MAKE) --no-print-directory lint-explain LINT_EXECUTE="--execute --attach-option use_local_kubeconfig=true"
+
+lint-ai: build ## Opt-in L3 check: an agent runs vgi-agent-tests.yaml against the kind fixture (needs the claude CLI)
+	ci/kind-fixture.sh $(MAKE) --no-print-directory lint-explain LINT_EXECUTE="--execute --attach-option use_local_kubeconfig=true" LINT_ARGS="--ai $(LINT_ARGS)"
 
 check: lint test-unit test-sql-all lint-explain ## Everything CI runs. Done = this passes.
 
@@ -71,7 +82,7 @@ run-http: build ## Serve over HTTP on port 8000
 	$(WORKER) --http --host 127.0.0.1 --port 8000
 
 debug: build tools ## Run one query against the worker with debug logging on stderr
-	@printf "LOAD vgi;\nATTACH 'kubernetes' (TYPE vgi, LOCATION '$(WORKER) --debug');\nSELECT kubernetes.main.greet('debug');\n" \
+	@printf "LOAD vgi;\nATTACH 'kubernetes' (TYPE vgi, LOCATION '$(WORKER) --debug', use_local_kubeconfig true);\nSELECT git_version FROM kubernetes.main.api_servers;\n" \
 	  | uvx --from haybarn-cli==$(HAYBARN_VERSION) haybarn -no-agent
 
 template-diff: ## Show upstream template changes since this project was created

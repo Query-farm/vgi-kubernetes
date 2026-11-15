@@ -1,0 +1,16 @@
+# Custom resource instances (applied after the CRD is established).
+apiVersion: fixture.vgi.query.farm/v1
+kind: Widget
+metadata:
+  name: widget-a
+  namespace: vgi-fixture
+  labels: {color: red}
+spec: {size: 3, color: red}
+---
+apiVersion: fixture.vgi.query.farm/v1
+kind: Widget
+metadata:
+  name: widget-b
+  namespace: vgi-fixture
+  labels: {color: blue}
+spec: {size: 5, color: blue}

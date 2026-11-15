@@ -1,0 +1,141 @@
+# name: test/sql/resources.test
+# description: API discovery, the generic resources() reader and the resource_tables ATTACH option
+# group: [kubernetes]
+
+require vgi
+
+statement ok
+LOAD json;
+
+require-env KUBERNETES_WORKER
+
+require-env KUBERNETES_FIXTURE_SERVER
+
+require-env KUBERNETES_FIXTURE_TOKEN
+
+require-env KUBERNETES_FIXTURE_CA
+
+statement ok
+ATTACH 'kubernetes' (TYPE vgi, LOCATION '{KUBERNETES_WORKER}', resource_tables 'fixture.vgi.query.farm/v1/widgets, policy/v1/poddisruptionbudgets, v1/secrets');
+
+statement ok
+CREATE SECRET k8s (TYPE kubernetes, SERVER '{KUBERNETES_FIXTURE_SERVER}', TOKEN '{KUBERNETES_FIXTURE_TOKEN}', CERTIFICATE_AUTHORITY_DATA '{KUBERNETES_FIXTURE_CA}');
+
+# ---------------------------------------------------------------- api_resources
+
+query TTTTTT
+SELECT api_version, resource, singular_name, namespaced, short_names, listable FROM kubernetes.main.api_resources WHERE kind = 'Widget';
+----
+fixture.vgi.query.farm/v1	widgets	widget	true	[wdg]	true
+
+query TTT
+SELECT "group", namespaced, list_contains(verbs, 'list') FROM kubernetes.main.api_resources WHERE api_version = 'apps/v1' AND resource = 'deployments';
+----
+apps	true	true
+
+query T
+SELECT count(*) > 30 FROM kubernetes.main.api_resources WHERE preferred AND listable;
+----
+true
+
+# ---------------------------------------------------------------- resources()
+
+query TTTTT
+SELECT namespace, name, kind, (spec->>'size')::INT, labels['color'] FROM kubernetes.main.resources('fixture.vgi.query.farm/v1', 'widgets') ORDER BY name;
+----
+vgi-fixture	widget-a	Widget	3	red
+vgi-fixture	widget-b	Widget	5	blue
+
+# Kind, singular and short names resolve too; label_selector and name push down.
+query T
+SELECT name FROM kubernetes.main.resources('fixture.vgi.query.farm/v1', 'Widget') WHERE label_selector = 'color=blue';
+----
+widget-b
+
+query T
+SELECT name FROM kubernetes.main.resources('fixture.vgi.query.farm/v1', 'wdg') WHERE name = 'widget-a' AND namespace = 'vgi-fixture';
+----
+widget-a
+
+# Cluster-scoped resources have a NULL namespace.
+query TT
+SELECT namespace, object->>'$.provisioner' FROM kubernetes.main.resources('storage.k8s.io/v1', 'storageclasses');
+----
+NULL	rancher.io/local-path
+
+# Built-in kinds work too; managedFields are dropped from object.
+query TT
+SELECT count(*), bool_and((object->'$.metadata.managedFields') IS NULL) FROM kubernetes.main.resources('apps/v1', 'deployments') WHERE namespace = 'vgi-fixture';
+----
+1	true
+
+# Secrets through the generic reader: data keys only, values replaced.
+query TTT
+SELECT object->>'$.data.username', object->>'$.data.password', annotations['kubectl.kubernetes.io/last-applied-configuration'] FROM kubernetes.main.resources('v1', 'secrets') WHERE namespace = 'vgi-fixture' AND name = 'db-credentials';
+----
+<redacted>	<redacted>	<redacted>
+
+query I
+SELECT count(*) FROM kubernetes.main.resources('v1', 'secrets') WHERE namespace = 'vgi-fixture' AND CAST(object AS VARCHAR) LIKE '%fixture-password%';
+----
+0
+
+query T
+SELECT object->>'$.data.log_level' LIKE '<hidden%' FROM kubernetes.main.resources('v1', 'configmaps') WHERE namespace = 'vgi-fixture' AND name = 'app-config';
+----
+true
+
+statement error
+SELECT * FROM kubernetes.main.resources('fixture.vgi.query.farm/v1', 'gadgets');
+----
+<REGEX>:.*no resource "gadgets".*
+
+statement error
+SELECT * FROM kubernetes.main.resources('nope.example.com/v1', 'widgets');
+----
+<REGEX>:.*not served.*
+
+statement error
+SELECT * FROM kubernetes.main.resources('not a version', 'widgets');
+----
+<REGEX>:.*
+
+# ---------------------------------------------------------------- resource_tables
+
+query T
+SELECT table_name FROM duckdb_tables() WHERE database_name = 'kubernetes' AND schema_name = 'resources' ORDER BY table_name;
+----
+poddisruptionbudgets
+secrets
+widgets
+
+query TI
+SELECT name, (spec->>'size')::INT FROM kubernetes.resources.widgets WHERE namespace = 'vgi-fixture' ORDER BY name;
+----
+widget-a	3
+widget-b	5
+
+query I
+SELECT count(*) FROM kubernetes.resources.poddisruptionbudgets;
+----
+0
+
+query T
+SELECT object->>'$.data.password' FROM kubernetes.resources.secrets WHERE namespace = 'vgi-fixture' AND name = 'db-credentials';
+----
+<redacted>
+
+statement ok
+DETACH kubernetes;
+
+# Bad resource_tables entries fail the ATTACH.
+statement error
+ATTACH 'kubernetes' AS bad (TYPE vgi, LOCATION '{KUBERNETES_WORKER}', resource_tables 'widgets');
+----
+<REGEX>:.*resource_tables entry.*
+
+# 'all' needs credentials at ATTACH time, which only the local kubeconfig opt-in provides.
+statement error
+ATTACH 'kubernetes' AS bad (TYPE vgi, LOCATION '{KUBERNETES_WORKER}', resource_tables 'all');
+----
+<REGEX>:.*use_local_kubeconfig.*
