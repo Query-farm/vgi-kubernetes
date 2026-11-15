@@ -32,6 +32,6 @@ jobs:
     uses: Query-farm/vgi-actions/.github/workflows/docker-publish.yml@v1
     secrets: inherit
     with:
-      image_name: vgi-starter-worker
+      image_name: vgi-kubernetes-worker
       health_port: "8000"
       version_check_cmd: "ci/check-version.sh"

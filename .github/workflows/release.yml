@@ -29,8 +29,8 @@ jobs:
     uses: Query-farm/vgi-actions/.github/workflows/go-release.yml@v1
     secrets: inherit
     with:
-      package: ./cmd/vgi-starter-worker
-      bin: vgi-starter-worker
+      package: ./cmd/vgi-kubernetes-worker
+      bin: vgi-kubernetes-worker
       go_version: "1.26"
       # Set to "1" if you import vgi-go/vgi/exprduckdb (Evaluate / AutoApplyFilters).
       cgo: "0"

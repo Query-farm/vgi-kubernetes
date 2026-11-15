@@ -12,5 +12,8 @@
   "optional_files": [
     ".github/workflows/nightly.yml",
     ".github/dependabot.yml"
-  ]
+  ],
+  "name": "kubernetes",
+  "repo": "your-org/vgi-kubernetes",
+  "initialized": "2026-11-15"
 }

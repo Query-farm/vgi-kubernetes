@@ -1,18 +1,18 @@
-// Package starter assembles the example functions into a catalog.
+// Package kubernetes assembles the example functions into a catalog.
 //
 // To add a function: write it (see greet.go / sequence.go / fetch_items.go),
 // then register it in NewWorker below.
 //
 // Run it:
 //
-//	vgi-starter-worker                      # stdio: what DuckDB launches by default
-//	vgi-starter-worker --http --port 8000   # HTTP: for Docker / hosted deploys
-//	vgi-starter-worker --help
+//	vgi-kubernetes-worker                      # stdio: what DuckDB launches by default
+//	vgi-kubernetes-worker --http --port 8000   # HTTP: for Docker / hosted deploys
+//	vgi-kubernetes-worker --help
 //
 // Attach it from DuckDB:
 //
-//	ATTACH 'starter' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-starter-worker');
-package starter
+//	ATTACH 'kubernetes' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-kubernetes-worker');
+package kubernetes
 
 import (
 	"github.com/Query-farm/vgi-go/vgi"
