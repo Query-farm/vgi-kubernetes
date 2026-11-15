@@ -44,8 +44,14 @@ else
   created=1
 fi
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 || docker pull -q "$IMAGE" >/dev/null
-"$KIND" load docker-image "$IMAGE" --name "$CLUSTER" >/dev/null
+# Pre-pull the fixture image inside each node with the node's own containerd,
+# for the node's own platform. `kind load docker-image` breaks on Docker's
+# containerd image store (newer Docker, ubuntu-latest runners): `ctr import
+# --all-platforms` fails with "content digest ... not found" for multi-platform
+# images whose other-platform blobs were never pulled.
+for node in $("$KIND" get nodes --name "$CLUSTER"); do
+  docker exec "$node" crictl pull "$IMAGE" >/dev/null
+done
 
 K="kubectl --kubeconfig $KUBECONFIG"
 $K apply -f "$REPO/test/fixture/manifests.yaml" -f "$REPO/test/fixture/reader.yaml" -f "$REPO/test/fixture/metrics-server.yaml" >/dev/null
@@ -57,7 +63,8 @@ $K -n vgi-fixture rollout status daemonset/agent --timeout 180s >/dev/null
 $K -n vgi-fixture wait --for condition=complete --timeout 180s job/pi >/dev/null
 $K -n vgi-fixture wait --for jsonpath='{.status.phase}'=Succeeded --timeout 180s pod/hello >/dev/null
 # The crash-looping pod: wait until it has restarted at least once and is in back-off.
-for _ in $(seq 1 90); do
+# Generous: on a loaded machine the earlier rollouts eat into the back-off schedule.
+for _ in $(seq 1 180); do
   reason="$($K -n vgi-fixture get pod crashy -o jsonpath='{.status.containerStatuses[0].state.waiting.reason}' 2>/dev/null || true)"
   restarts="$($K -n vgi-fixture get pod crashy -o jsonpath='{.status.containerStatuses[0].restartCount}' 2>/dev/null || echo 0)"
   [ "$reason" = "CrashLoopBackOff" ] && [ "${restarts:-0}" -ge 1 ] && break
