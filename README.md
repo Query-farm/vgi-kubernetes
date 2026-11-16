@@ -35,7 +35,7 @@ custom resources are not ready" become a `JOIN` and a `GROUP BY`.
 ```sql
 INSTALL vgi FROM community;     -- Haybarn 2.0; on DuckDB 2.0 use the query_farm repository
 LOAD vgi;
-ATTACH 'kubernetes' (TYPE vgi, LOCATION 'github-auto://Query-farm/vgi-kubernetes@v0.1.0');
+ATTACH 'kubernetes' (TYPE vgi, LOCATION 'github-auto://Query-farm/vgi-kubernetes@v0.1.1');
 
 -- A ServiceAccount token (read-only RBAC is enough) ...
 CREATE SECRET (TYPE kubernetes, SERVER 'https://10.0.0.1:6443', TOKEN '...',
@@ -56,7 +56,7 @@ The secret type is registered by the worker, so run `CREATE SECRET` after `ATTAC
 - **DuckDB 2.0**:
   `SET allow_extension_repositories = 'allowed'; CREATE EXTENSION REPOSITORY IF NOT EXISTS query_farm WITH PREFIX 'https://duckdb-extensions.query.farm'; INSTALL vgi FROM query_farm; LOAD vgi FROM query_farm;`
   then attach as above.
-- **Docker** (HTTP): `docker run -p 8000:8000 ghcr.io/query-farm/vgi-kubernetes:0.1.0`, then
+- **Docker** (HTTP): `docker run -p 8000:8000 ghcr.io/query-farm/vgi-kubernetes:0.1.1`, then
   `ATTACH 'kubernetes' (TYPE vgi, LOCATION 'http://localhost:8000')`.
 - **From source**: `make build` (Go 1.26+ and a C toolchain, for cgo), then
   `ATTACH 'kubernetes' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-kubernetes-worker')`.

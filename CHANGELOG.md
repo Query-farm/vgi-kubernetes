@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.1 (2026-11-16)
+
+- Bump vgi-go to 0.42.2.
+
 ## 0.1.0 (unreleased)
 
 Initial release: a live Kubernetes cluster's API as read-only SQL.
