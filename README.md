@@ -60,8 +60,6 @@ The secret type is registered by the worker, so run `CREATE SECRET` after `ATTAC
   `ATTACH 'kubernetes' (TYPE vgi, LOCATION 'http://localhost:8000')`.
 - **From source**: `make build` (Go 1.26+ and a C toolchain, for cgo), then
   `ATTACH 'kubernetes' (TYPE vgi, LOCATION '/abs/path/to/bin/vgi-kubernetes-worker')`.
-
-v0.1.0 is not published yet. Until it is, build from source.
 </details>
 
 ## Credentials
