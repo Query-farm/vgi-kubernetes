@@ -5,8 +5,8 @@ go 1.26.0
 replace github.com/google/flatbuffers => github.com/rustyconover/flatbuffers v25.12.20-0.20261026151427-0acd09bcd1ff+incompatible
 
 require (
-	github.com/Query-farm/vgi-go v0.42.2
-	github.com/Query-farm/vgi-rpc-go v0.37.0
+	github.com/Query-farm/vgi-go v0.44.1
+	github.com/Query-farm/vgi-rpc-go v0.38.1
 	github.com/apache/arrow-go/v18 v18.7.0
 	k8s.io/api v0.37.2
 	k8s.io/apimachinery v0.37.2
@@ -15,8 +15,11 @@ require (
 )
 
 require (
-	github.com/Query-farm-haybarn/haybarn-go-bindings v0.20000.0-rc.9 // indirect
-	github.com/Query-farm-haybarn/haybarn-go/v2 v2.20000.0-rc.9 // indirect
+	github.com/MicahParks/jwkset v0.11.3 // indirect
+	github.com/MicahParks/keyfunc/v3 v3.8.1 // indirect
+	github.com/Query-farm-haybarn/haybarn-go-bindings v0.20001.0-rc.3 // indirect
+	github.com/Query-farm-haybarn/haybarn-go/v2 v2.20001.0-rc.3 // indirect
+	github.com/Query-farm/vgi-rpc-go/vgirpc/jwtauth v0.17.1 // indirect
 	github.com/andybalholm/brotli v1.2.2 // indirect
 	github.com/apache/thrift v0.24.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
@@ -25,6 +28,7 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/goccy/go-json v0.10.6 // indirect
+	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect
 	github.com/google/flatbuffers v25.12.19+incompatible // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
@@ -52,10 +56,10 @@ require (
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/inf.v0 v0.9.1 // indirect
-	haybarn-extensions.query.farm/go/libhaybarn/darwin-arm64 v0.20000.0-rc.9 // indirect
-	haybarn-extensions.query.farm/go/libhaybarn/linux-amd64 v0.20000.0-rc.9 // indirect
-	haybarn-extensions.query.farm/go/libhaybarn/linux-arm64 v0.20000.0-rc.9 // indirect
-	haybarn-extensions.query.farm/go/libhaybarn/windows-amd64 v0.20000.0-rc.9 // indirect
+	haybarn-extensions.query.farm/go/libhaybarn/darwin-arm64 v0.20001.0-rc.3 // indirect
+	haybarn-extensions.query.farm/go/libhaybarn/linux-amd64 v0.20001.0-rc.3 // indirect
+	haybarn-extensions.query.farm/go/libhaybarn/linux-arm64 v0.20001.0-rc.3 // indirect
+	haybarn-extensions.query.farm/go/libhaybarn/windows-amd64 v0.20001.0-rc.3 // indirect
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20260721132016-d427ff9ee9ad // indirect
 	k8s.io/utils v0.0.0-20260626114624-be93311217bd // indirect
